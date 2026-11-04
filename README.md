@@ -9,8 +9,9 @@ die Daten bleiben nur auf dem Gerät.
   - *Für andere mitbezahlt?* Personen wählen, gleich aufteilen oder Beträge eingeben.
     Nur dein Anteil zählt in der Statistik.
   - *Jemand zahlte für mich:* zählt als deine Ausgabe, du schuldest der Person den Betrag.
-- **Liste:** alle Einträge pro Monat, antippen zum Bearbeiten/Löschen.
-- **Statistik:** Monatssumme, Budget-Balken, Verteilung nach Kategorien, letzte 6 Monate.
+- **Liste:** alle Einträge pro Monat. Antippen = bearbeiten, nach links wischen = löschen (mit Rückgängig).
+- **Wiederkehrend:** monatlich, vierteljährlich oder jährlich – wird am Stichtag automatisch eingetragen.
+- **Statistik:** Jahr → Monat → Kategorie. Kategorie-Ansicht mit Woche/Monat/Jahr, Vergleich zum Vorzeitraum, Budget-Linie.
 - **Auslagen:** offene Beträge pro Person, einzeln oder komplett abhaken.
 - **Mehr:** Budget (abschaltbar), Kategorien (Name, Emoji, Farbe, Reihenfolge), Personen,
   Backup als JSON, Export als CSV, Backup laden.

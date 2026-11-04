@@ -20,6 +20,7 @@ function defaultState() {
     categories: DEFAULT_CATS.map(([name, emoji], i) => ({ id: uid(), name, emoji, color: PALETTE[i % PALETTE.length] })),
     people: [],
     entries: [],
+    recurring: [],
   };
 }
 
@@ -29,6 +30,7 @@ function migrate(s) {
   if (!Array.isArray(s.categories) || !s.categories.length) s.categories = d.categories;
   if (!Array.isArray(s.people)) s.people = [];
   if (!Array.isArray(s.entries)) s.entries = [];
+  if (!Array.isArray(s.recurring)) s.recurring = [];
   return s;
 }
 
@@ -96,12 +98,23 @@ const myShare = e => e.kind === 'received' ? e.amount : e.amount - othersSum(e);
 const entriesOfMonth = key => state.entries.filter(e => e.date.startsWith(key));
 const monthTotal = key => entriesOfMonth(key).reduce((a, e) => a + myShare(e), 0);
 
-function toast(msg) {
+function toast(msg, action) {
   const t = $('#toast');
-  t.textContent = msg;
+  t.innerHTML = esc(msg) + (action ? ` · <button id="toast-act">${esc(action.label)}</button>` : '');
+  t.classList.toggle('has-action', !!action);
   t.classList.add('show');
+  if (action) $('#toast-act').addEventListener('click', () => { t.classList.remove('show'); action.run(); });
   clearTimeout(toast.timer);
-  toast.timer = setTimeout(() => t.classList.remove('show'), 2600);
+  toast.timer = setTimeout(() => t.classList.remove('show', 'has-action'), action ? 5000 : 2600);
+}
+
+// Löschen mit "Rückgängig"
+function deleteEntry(id) {
+  const idx = state.entries.findIndex(e => e.id === id);
+  if (idx < 0) return;
+  const [removed] = state.entries.splice(idx, 1);
+  save();
+  toast('Gelöscht', { label: 'Rückgängig', run: () => { state.entries.splice(idx, 0, removed); save(); render(); toast('Wiederhergestellt'); } });
 }
 
 function addPersonPrompt() {
@@ -114,6 +127,57 @@ function addPersonPrompt() {
   save();
   return p.id;
 }
+
+/* ================= Wiederkehrende Ausgaben ================= */
+
+const INTERVALS = { 1: 'monatlich', 3: 'vierteljährlich', 12: 'jährlich' };
+
+// n-tes Datum einer Vorlage; zu kurze Monate → letzter Tag
+function occDate(t, n) {
+  const [y, m, d] = t.start.split('-').map(Number);
+  const mi = m - 1 + n * t.interval;
+  const yy = y + Math.floor(mi / 12), mm = ((mi % 12) + 12) % 12;
+  const dim = new Date(yy, mm + 1, 0).getDate();
+  return ymd(new Date(yy, mm, Math.min(d, dim)));
+}
+
+function nextOccurrence(t) {
+  for (let n = 0; n < 2000; n++) {
+    const d = occDate(t, n);
+    if (t.end && d > t.end) return null;
+    if (!t.lastDate || d > t.lastDate) return d;
+  }
+  return null;
+}
+
+function entryFromTemplate(t, date) {
+  const e = { id: uid(), kind: t.kind, amount: t.amount, categoryId: t.categoryId, note: t.note,
+    date, createdAt: Date.now(), recurringId: t.id };
+  if (t.kind === 'received') { e.personId = t.personId; e.settled = false; }
+  else e.shares = (t.shares || []).map(s => ({ personId: s.personId, amount: s.amount, settled: false }));
+  return e;
+}
+
+// Legt alle fälligen Einträge bis heute an (auch verpasste)
+function generateRecurring() {
+  const now = today();
+  let count = 0;
+  state.recurring.forEach(t => {
+    if (t.paused) return;
+    for (let n = 0; n < 2000; n++) {
+      const d = occDate(t, n);
+      if (d > now || (t.end && d > t.end)) break;
+      if (t.lastDate && d <= t.lastDate) continue;
+      state.entries.push(entryFromTemplate(t, d));
+      t.lastDate = d;
+      count++;
+    }
+  });
+  if (count) save();
+  return count;
+}
+
+function yesterday() { const d = new Date(); d.setDate(d.getDate() - 1); return ymd(d); }
 
 /* ================= Navigation ================= */
 
@@ -134,7 +198,8 @@ function render() {
 }
 
 document.querySelectorAll('#nav button').forEach(b => b.addEventListener('click', () => {
-  if (b.dataset.tab === 'add' && tab === 'add' && draft && draft.id) draft = null; // "Neu" verlässt Bearbeiten
+  if (b.dataset.tab === 'add' && tab === 'add' && draft && (draft.id || draft.templateId)) draft = null; // "Neu" verlässt Bearbeiten
+  if (b.dataset.tab === 'stats' && tab === 'stats') st.level = 'year'; // nochmal tippen = zurück zur Jahresansicht
   go(b.dataset.tab);
 }));
 
@@ -144,14 +209,21 @@ function newDraft() {
   return {
     id: null, amountStr: '', kind: 'paid', categoryId: null, date: today(), note: '',
     people: [], includeMe: true, mode: 'equal', custom: {}, receivedFrom: null, settled: {}, createdAt: null,
+    repeat: false, interval: 1, endDate: '', paused: false, templateId: null, recurringId: null, returnTab: null,
   };
+}
+
+function draftFromTemplate(t) {
+  const d = draftFromEntry({ ...t, id: null, date: t.start, settled: false });
+  Object.assign(d, { templateId: t.id, repeat: true, interval: t.interval, endDate: t.end || '', paused: !!t.paused, returnTab: 'settings' });
+  return d;
 }
 
 function draftFromEntry(e) {
   const d = newDraft();
   Object.assign(d, {
     id: e.id, amountStr: toInput(e.amount), kind: e.kind, categoryId: e.categoryId,
-    date: e.date, note: e.note || '', createdAt: e.createdAt,
+    date: e.date, note: e.note || '', createdAt: e.createdAt, recurringId: e.recurringId || null,
   });
   if (e.kind === 'paid' && e.shares && e.shares.length) {
     d.people = e.shares.map(s => s.personId);
@@ -188,8 +260,9 @@ function renderAdd() {
   const d = draft || (draft = newDraft());
   const b = budgetInfo();
   $('#view').innerHTML = `
-    <h1>${d.id ? 'Eintrag bearbeiten' : 'Neue Ausgabe'}</h1>
-    ${b && !d.id ? `<div class="hint">Budget ${monthLabel(thisMonth())}: noch <b class="${b.pct >= 1 ? 'neg' : ''}">${fmt(b.budget - b.spent)}</b> von ${fmt(b.budget)}</div>` : ''}
+    <h1>${d.templateId || d.repeat ? 'Wiederkehrende Ausgabe' : d.id ? 'Eintrag bearbeiten' : 'Neue Ausgabe'}</h1>
+    ${d.recurringId && state.recurring.some(t => t.id === d.recurringId) ? `<div class="hint">🔁 Automatisch angelegt. Änderungen gelten nur für diesen Eintrag. <button class="link" id="open-tpl">Vorlage bearbeiten</button></div>` : ''}
+    ${b && !d.id && !d.templateId ? `<div class="hint">Budget ${monthLabel(thisMonth())}: noch <b class="${b.pct >= 1 ? 'neg' : ''}">${fmt(b.budget - b.spent)}</b> von ${fmt(b.budget)}</div>` : ''}
     <div class="amount-box">
       <input id="amt" type="text" inputmode="decimal" placeholder="0,00" autocomplete="off" value="${esc(d.amountStr)}">
       <span>€</span>
@@ -207,14 +280,17 @@ function renderAdd() {
     </div>
     <div id="people-section"></div>
     <label>Notiz<input id="note" type="text" placeholder="optional, z. B. Rewe" value="${esc(d.note)}"></label>
-    <label>Datum<input id="date" type="date" value="${esc(d.date)}"></label>
+    <label><span id="date-label">${d.repeat ? 'Erstes Datum' : 'Datum'}</span><input id="date" type="date" value="${esc(d.date)}"></label>
+    ${d.id ? '' : `<div id="repeat-section"></div>`}
     <button class="primary" id="save">Speichern</button>
-    ${d.id ? `<button class="ghost" id="cancel">Abbrechen</button><button class="ghost danger" id="del">Eintrag löschen</button>` : ''}
+    ${d.id || d.templateId ? `<button class="ghost" id="cancel">Abbrechen</button>` : ''}
+    ${d.id ? `<button class="outline-danger" id="del">🗑 Eintrag löschen</button>` : ''}
+    ${d.templateId ? `<button class="outline-danger" id="del-tpl">🗑 Wiederkehrende Ausgabe löschen</button>` : ''}
   `;
 
   $('#amt').addEventListener('input', e => { d.amountStr = e.target.value; updateSplitView(); });
   $('#note').addEventListener('input', e => { d.note = e.target.value; });
-  $('#date').addEventListener('change', e => { d.date = e.target.value || today(); });
+  $('#date').addEventListener('change', e => { d.date = e.target.value || today(); renderRepeatSection(); });
   document.querySelectorAll('#kind button').forEach(btn => btn.addEventListener('click', () => {
     d.kind = btn.dataset.k;
     document.querySelectorAll('#kind button').forEach(x => x.classList.toggle('on', x === btn));
@@ -225,15 +301,45 @@ function renderAdd() {
     document.querySelectorAll('.cat').forEach(x => x.classList.toggle('on', x === btn));
   }));
   $('#save').addEventListener('click', saveDraft);
-  if (d.id) {
-    $('#cancel').addEventListener('click', () => { draft = null; go('list'); });
-    $('#del').addEventListener('click', () => {
-      if (!confirm('Eintrag wirklich löschen?')) return;
-      state.entries = state.entries.filter(e => e.id !== d.id);
-      save(); draft = null; toast('Gelöscht'); go('list');
-    });
-  }
+  const back = d.returnTab || 'list';
+  if ($('#cancel')) $('#cancel').addEventListener('click', () => { draft = null; go(back); });
+  if ($('#del')) $('#del').addEventListener('click', () => { draft = null; deleteEntry(d.id); go(back); });
+  if ($('#del-tpl')) $('#del-tpl').addEventListener('click', () => {
+    if (!confirm('Wiederkehrende Ausgabe löschen? Bereits eingetragene Ausgaben bleiben erhalten.')) return;
+    state.recurring = state.recurring.filter(t => t.id !== d.templateId);
+    save(); draft = null; toast('Gelöscht'); go('settings');
+  });
+  if ($('#open-tpl')) $('#open-tpl').addEventListener('click', () => {
+    const t = state.recurring.find(x => x.id === d.recurringId);
+    if (t) { draft = draftFromTemplate(t); render(); window.scrollTo(0, 0); }
+  });
   renderPeopleSection();
+  renderRepeatSection();
+}
+
+function renderRepeatSection() {
+  const d = draft, box = $('#repeat-section');
+  if (!box) return;
+  const lbl = $('#date-label');
+  if (lbl) lbl.textContent = d.repeat ? 'Erstes Datum' : 'Datum';
+  const day = Number((d.date || today()).slice(8, 10));
+  box.innerHTML = `
+    ${d.templateId ? '' : `<label class="check"><input type="checkbox" id="rep" ${d.repeat ? 'checked' : ''}> 🔁 Regelmäßig wiederholen</label>`}
+    ${d.repeat ? `
+      <div class="seg" id="interval">
+        ${Object.entries(INTERVALS).map(([k, v]) => `<button data-i="${k}" class="${d.interval == k ? 'on' : ''}">${v[0].toUpperCase() + v.slice(1)}</button>`).join('')}
+      </div>
+      <p class="hint">Wird automatisch eingetragen: ${INTERVALS[d.interval]} am ${day}.${d.interval === 1 ? ' des Monats' : ''}${day > 28 ? ' (in kürzeren Monaten am letzten Tag)' : ''}.</p>
+      <label>Endet am <small>(optional)</small><input type="date" id="end" value="${esc(d.endDate)}"></label>
+      ${d.templateId ? `<label class="check"><input type="checkbox" id="paused" ${d.paused ? 'checked' : ''}> Pausiert</label>` : ''}
+    ` : ''}`;
+  const rep = $('#rep');
+  if (rep) rep.addEventListener('change', () => { d.repeat = rep.checked; renderRepeatSection(); });
+  box.querySelectorAll('#interval button').forEach(b => b.addEventListener('click', () => { d.interval = Number(b.dataset.i); renderRepeatSection(); }));
+  const end = $('#end');
+  if (end) end.addEventListener('change', () => { d.endDate = end.value; });
+  const pz = $('#paused');
+  if (pz) pz.addEventListener('change', () => { d.paused = pz.checked; });
 }
 
 function chipsHtml(selectedIds) {
@@ -357,18 +463,44 @@ function saveDraft() {
     entry.shares = sp.shares.filter(s => s.amount > 0).map(s => ({ ...s, settled: !!d.settled[s.personId] }));
   }
 
+  if (d.repeat) { saveTemplate(d, entry); return; }
+  if (d.recurringId) entry.recurringId = d.recurringId;
+
   const idx = state.entries.findIndex(e => e.id === entry.id);
   if (idx >= 0) state.entries[idx] = entry; else state.entries.push(entry);
   save();
 
   const wasEdit = !!d.id;
+  const back = d.returnTab || 'list';
   draft = null;
   let msg = wasEdit ? 'Änderung gespeichert ✓' : 'Gespeichert ✓';
   const b = budgetInfo();
   if (b && b.pct >= 1) msg += ` · Budget überschritten (${Math.round(b.pct * 100)} %)`;
   else if (b && b.pct >= 0.8) msg += ` · ${Math.round(b.pct * 100)} % vom Budget`;
   toast(msg);
-  go(wasEdit ? 'list' : 'add');
+  go(wasEdit ? back : 'add');
+}
+
+function saveTemplate(d, entry) {
+  if (d.endDate && d.endDate < entry.date) { toast('Das Enddatum liegt vor dem ersten Datum'); return; }
+  let t = state.recurring.find(x => x.id === d.templateId);
+  const isNew = !t;
+  if (isNew) { t = { id: uid(), lastDate: null, createdAt: Date.now() }; state.recurring.push(t); }
+  if (t.paused && !d.paused) t.lastDate = yesterday(); // verpasste Termine beim Fortsetzen nicht nachholen
+  Object.assign(t, {
+    kind: entry.kind, amount: entry.amount, categoryId: entry.categoryId, note: entry.note,
+    start: entry.date, interval: d.interval, end: d.endDate || null, paused: d.paused,
+  });
+  if (entry.kind === 'received') { t.personId = entry.personId; delete t.shares; }
+  else { t.shares = entry.shares.map(s => ({ personId: s.personId, amount: s.amount })); delete t.personId; }
+  save();
+  const n = generateRecurring();
+  const next = nextOccurrence(t);
+  draft = null;
+  toast(isNew
+    ? (n ? `🔁 Angelegt · ${n} Eintrag${n > 1 ? 'e' : ''} hinzugefügt` : `🔁 Angelegt · erstmals am ${next ? shortDate(next) : '–'}`)
+    : 'Änderung gespeichert ✓ (gilt ab jetzt)');
+  go(isNew && d.returnTab !== 'settings' ? 'add' : 'settings');
 }
 
 // Status "erledigt" nur behalten, wenn die Person beim Bearbeiten gleich bleibt
@@ -404,11 +536,20 @@ function entryRow(e) {
     sub += ` · mit ${e.shares.map(s => esc(person(s.personId).name)).join(', ')}`;
     right += `<small>bezahlt ${fmt(e.amount)}${open ? '' : ' ✓'}</small>`;
   }
-  return `<button class="item" data-edit="${e.id}">
+  return `<div class="swipe"><button class="item" data-edit="${e.id}">
     <span class="dot" style="background:${esc(c.color)}22">${esc(c.emoji)}</span>
-    <span class="mid"><div>${esc(e.note || c.name)}</div><div>${sub}</div></span>
+    <span class="mid"><div>${e.recurringId ? '🔁 ' : ''}${esc(e.note || c.name)}</div><div>${sub}</div></span>
     <span class="amt">${right}</span>
-  </button>`;
+  </button><button class="swipe-del" data-del="${e.id}">Löschen</button></div>`;
+}
+
+// Antippen = bearbeiten, nach links wischen = löschen
+function bindEntryRows(returnTab) {
+  document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
+    const e = state.entries.find(x => x.id === b.dataset.edit);
+    if (e) { draft = draftFromEntry(e); draft.returnTab = returnTab; go('add'); }
+  }));
+  document.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => { deleteEntry(b.dataset.del); render(); }));
 }
 
 function renderList() {
@@ -427,15 +568,57 @@ function renderList() {
     html += entryRow(e);
   });
   if (open) html += '</div>';
+  if (list.length) html += `<p class="hint" style="text-align:center">Antippen zum Bearbeiten · nach links wischen zum Löschen</p>`;
   $('#view').innerHTML = html;
   bindMonthNav('listMonth');
-  document.querySelectorAll('[data-edit]').forEach(b => b.addEventListener('click', () => {
-    const e = state.entries.find(x => x.id === b.dataset.edit);
-    if (e) { draft = draftFromEntry(e); go('add'); }
-  }));
+  bindEntryRows('list');
 }
 
 /* ================= Statistik ================= */
+// Ebenen: Jahr → Monat → Kategorie (Woche/Monat/Jahr)
+
+const st = { level: 'year', year: Number(thisMonth().slice(0, 4)), month: thisMonth(), catId: null, period: 'month', anchor: today(), from: 'year' };
+
+const sumMine = list => list.reduce((a, e) => a + myShare(e), 0);
+const inRange = (e, start, end) => e.date >= start && e.date < end;
+
+function changeText(cur, prev, prevLabel) {
+  if (!prev) return '';
+  const pct = Math.round((cur - prev) / prev * 100);
+  const cls = pct > 0 ? 'neg' : 'pos';
+  return `<div class="hint"><span class="${cls}">${pct > 0 ? '+' : ''}${pct} %</span> gegenüber ${prevLabel} (${fmt(prev)})</div>`;
+}
+
+// Balkendiagramm: items = [{key, label, value}]
+function barChart(items, opts = {}) {
+  const max = Math.max(...items.map(i => i.value), opts.budget || 0, 1);
+  return `<div class="chart">
+    <div class="area">
+      ${opts.budget ? `<div class="budget-line" style="bottom:${opts.budget / max * 100}%"><span>Budget</span></div>` : ''}
+      ${items.map(i => `
+        <${opts.clickable ? 'button' : 'div'} class="col ${i.key === opts.selected ? 'on' : ''} ${opts.budget && i.value > opts.budget ? 'over' : ''}" ${opts.clickable ? `data-bar="${i.key}"` : ''}>
+          ${opts.values && i.value ? `<span class="v">${fmtShort(i.value)}</span>` : ''}
+          <span class="b" style="height:${i.value / max * 100}%"></span>
+        </${opts.clickable ? 'button' : 'div'}>`).join('')}
+    </div>
+    <div class="xl">${items.map(i => `<span>${i.label}</span>`).join('')}</div>
+  </div>`;
+}
+
+function catLegend(parts, total) {
+  return `<div class="legend">${parts.map(p => `
+    <button class="r" data-cat="${p.id}"><span class="sw" style="background:${esc(p.color)}"></span>
+      <span class="n">${esc(p.emoji)} ${esc(p.name)}</span>
+      <span>${fmt(p.value)}</span><span class="p">${Math.round(p.value / total * 100)} %</span><span class="chev">›</span></button>`).join('')}
+  </div>`;
+}
+
+function catParts(list) {
+  const by = {};
+  list.forEach(e => { by[e.categoryId] = (by[e.categoryId] || 0) + myShare(e); });
+  return Object.entries(by).filter(([, v]) => v > 0)
+    .map(([id, value]) => ({ ...cat(id), id, value })).sort((a, b) => b.value - a.value);
+}
 
 function donut(parts, total) {
   const R = 70, C = 2 * Math.PI * R;
@@ -451,19 +634,70 @@ function donut(parts, total) {
     <circle r="${R}" cx="90" cy="90" fill="none" stroke="var(--line)" stroke-width="28"/>
     ${segs}
     <text x="90" y="86" text-anchor="middle" font-size="12" fill="var(--muted)">Gesamt</text>
-    <text x="90" y="106" text-anchor="middle" font-size="18" font-weight="700" fill="var(--text)">${fmtShort(total)} €</text>
+    <text x="90" y="106" text-anchor="middle" font-size="17" font-weight="700" fill="var(--text)">${fmt(total)}</text>
   </svg>`;
 }
 
-function renderStats() {
-  const key = ui.statsMonth;
-  const total = monthTotal(key);
-  const byCat = {};
-  entriesOfMonth(key).forEach(e => { byCat[e.categoryId] = (byCat[e.categoryId] || 0) + myShare(e); });
-  const parts = Object.entries(byCat).filter(([, v]) => v > 0)
-    .map(([id, value]) => ({ ...cat(id), value })).sort((a, b) => b.value - a.value);
+function navRow(label, attr) {
+  return `<div class="month-nav">
+    <button data-${attr}="-1" aria-label="Zurück">‹</button><strong>${label}</strong><button data-${attr}="1" aria-label="Weiter">›</button>
+  </div>`;
+}
+function bindNav(attr, fn) {
+  document.querySelectorAll(`[data-${attr}]`).forEach(b => b.addEventListener('click', () => { fn(Number(b.getAttribute(`data-${attr}`))); render(); }));
+}
 
-  const s = state.settings;
+function renderStats() {
+  ({ year: renderYear, month: renderMonth, cat: renderCat })[st.level]();
+}
+
+function openCat(id, period, start) {
+  Object.assign(st, { level: 'cat', catId: id, period, from: st.level });
+  const r = periodRange(period, start);
+  st.anchor = today() >= r.start && today() < r.end ? today() : start;
+  render(); window.scrollTo(0, 0);
+}
+
+function renderYear() {
+  const y = st.year, s = state.settings;
+  const months = [...Array(12)].map((_, i) => `${y}-${String(i + 1).padStart(2, '0')}`);
+  const vals = months.map(monthTotal);
+  const total = vals.reduce((a, v) => a + v, 0);
+  const curY = Number(thisMonth().slice(0, 4));
+  const elapsed = y < curY ? 12 : y === curY ? Number(thisMonth().slice(5)) : 0;
+  const budget = s.budgetEnabled && s.budget > 0 ? s.budget : 0;
+  const inBudget = vals.slice(0, elapsed).filter(v => v <= budget).length;
+  const parts = catParts(state.entries.filter(e => e.date.startsWith(y + '-')));
+
+  $('#view').innerHTML = `
+    <h1>Statistik</h1>
+    ${navRow(String(y), 'yn')}
+    <div class="card">
+      <div class="muted">Deine Ausgaben ${y}</div>
+      <div class="big">${fmt(total)}</div>
+      ${elapsed ? `<div class="hint">Ø ${fmt(Math.round(total / elapsed))} pro Monat${budget ? ` · ${inBudget} von ${elapsed} Monaten im Budget` : ''}</div>` : ''}
+      ${changeText(total, sumMine(state.entries.filter(e => e.date.startsWith((y - 1) + '-'))), y - 1)}
+    </div>
+    <div class="card">
+      <div class="muted">Monate <small>· antippen für Details</small></div>
+      ${barChart(months.map((m, i) => ({ key: m, label: monthShort(m).slice(0, 3), value: vals[i] })),
+        { clickable: true, values: true, budget, selected: thisMonth() })}
+    </div>
+    <div class="card">
+      <div class="muted">Kategorien <small>· antippen für Details</small></div>
+      ${parts.length ? catLegend(parts, total) : `<div class="empty">Noch keine Ausgaben in ${y}.</div>`}
+    </div>`;
+  bindNav('yn', d => { st.year += d; });
+  document.querySelectorAll('[data-bar]').forEach(b => b.addEventListener('click', () => {
+    Object.assign(st, { level: 'month', month: b.dataset.bar }); render(); window.scrollTo(0, 0);
+  }));
+  document.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => openCat(b.dataset.cat, 'year', `${y}-01-01`)));
+}
+
+function renderMonth() {
+  const key = st.month, s = state.settings;
+  const total = monthTotal(key);
+  const parts = catParts(entriesOfMonth(key));
   let budgetHtml = '';
   if (s.budgetEnabled && s.budget > 0) {
     const pct = total / s.budget;
@@ -472,40 +706,104 @@ function renderStats() {
       <div class="hint">${Math.round(pct * 100)} % von ${fmt(s.budget)} · ${pct >= 1
         ? `<span class="neg">${fmt(total - s.budget)} drüber</span>` : `noch ${fmt(s.budget - total)}`}</div>`;
   }
-
-  const months = [];
-  for (let i = 5; i >= 0; i--) months.push(shiftMonth(key, -i));
-  const vals = months.map(monthTotal);
-  const max = Math.max(...vals, s.budgetEnabled ? s.budget : 0, 1);
-
+  const prev = shiftMonth(key, -1);
   $('#view').innerHTML = `
-    <h1>Statistik</h1>
-    ${monthNav(key)}
+    <button class="back" id="back">‹ ${key.slice(0, 4)}</button>
+    <h1>${monthLabel(key)}</h1>
+    ${navRow(monthLabel(key), 'mn2')}
     <div class="card">
       <div class="muted">Deine Ausgaben</div>
       <div class="big">${fmt(total)}</div>
       ${budgetHtml}
+      ${changeText(total, monthTotal(prev), monthLabel(prev).split(' ')[0])}
     </div>
     <div class="card">
-      ${parts.length ? `<div class="donut-wrap">${donut(parts, total)}</div>
-        <div class="legend">${parts.map(p => `
-          <div class="r"><span class="sw" style="background:${esc(p.color)}"></span>
-            <span class="n">${esc(p.emoji)} ${esc(p.name)}</span>
-            <span>${fmt(p.value)}</span><span class="p">${Math.round(p.value / total * 100)} %</span></div>`).join('')}
-        </div>` : `<div class="empty">Noch keine Ausgaben in diesem Monat.</div>`}
-    </div>
-    <div class="card">
-      <div class="muted">Letzte 6 Monate</div>
-      <div class="bars">${months.map((m, i) => `
-        <button class="col ${m === key ? 'on' : ''}" data-month="${m}">
-          <span class="v">${vals[i] ? fmtShort(vals[i]) : ''}</span>
-          <span class="b" style="height:${vals[i] / max * 100}%"></span>
-          <span>${monthShort(m)}</span>
-        </button>`).join('')}
-      </div>
+      ${parts.length ? `<div class="donut-wrap">${donut(parts, total)}</div>${catLegend(parts, total)}`
+        : `<div class="empty">Noch keine Ausgaben in diesem Monat.</div>`}
     </div>`;
-  bindMonthNav('statsMonth');
-  document.querySelectorAll('[data-month]').forEach(b => b.addEventListener('click', () => { ui.statsMonth = b.dataset.month; render(); }));
+  $('#back').addEventListener('click', () => { st.level = 'year'; st.year = Number(key.slice(0, 4)); render(); });
+  bindNav('mn2', d => { st.month = shiftMonth(st.month, d); });
+  document.querySelectorAll('[data-cat]').forEach(b => b.addEventListener('click', () => openCat(b.dataset.cat, 'month', `${key}-01`)));
+}
+
+function isoWeek(d) {
+  const t = new Date(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()));
+  const day = t.getUTCDay() || 7;
+  t.setUTCDate(t.getUTCDate() + 4 - day);
+  return Math.ceil(((t - Date.UTC(t.getUTCFullYear(), 0, 1)) / 86400000 + 1) / 7);
+}
+
+// Zeitraum rund um ein Datum: Start/Ende (Ende exklusiv), Beschriftung, Balken
+function periodRange(period, anchor) {
+  const [y, m, d] = anchor.split('-').map(Number);
+  const buckets = [];
+  if (period === 'week') {
+    const a = new Date(y, m - 1, d);
+    const s = new Date(y, m - 1, d - (a.getDay() + 6) % 7);
+    for (let i = 0; i < 7; i++) {
+      const x = new Date(s.getFullYear(), s.getMonth(), s.getDate() + i);
+      const n = new Date(s.getFullYear(), s.getMonth(), s.getDate() + i + 1);
+      buckets.push({ key: ymd(x), start: ymd(x), end: ymd(n), label: x.toLocaleDateString('de-DE', { weekday: 'short' }).slice(0, 2) });
+    }
+    const last = new Date(s.getFullYear(), s.getMonth(), s.getDate() + 6);
+    return { start: buckets[0].start, end: buckets[6].end, buckets,
+      label: `KW ${isoWeek(s)} · ${s.getDate()}.${s.getMonth() + 1}. – ${last.getDate()}.${last.getMonth() + 1}.${last.getFullYear()}`, prevLabel: 'Vorwoche' };
+  }
+  if (period === 'month') {
+    const dim = new Date(y, m, 0).getDate();
+    for (let i = 1; i <= dim; i++) {
+      buckets.push({ key: ymd(new Date(y, m - 1, i)), start: ymd(new Date(y, m - 1, i)), end: ymd(new Date(y, m - 1, i + 1)),
+        label: i === 1 || i % 5 === 0 ? String(i) : '' });
+    }
+    return { start: ymd(new Date(y, m - 1, 1)), end: ymd(new Date(y, m, 1)), buckets, label: monthLabel(anchor.slice(0, 7)), prevLabel: 'Vormonat' };
+  }
+  for (let i = 0; i < 12; i++) {
+    buckets.push({ key: ymd(new Date(y, i, 1)), start: ymd(new Date(y, i, 1)), end: ymd(new Date(y, i + 1, 1)),
+      label: new Date(y, i, 1).toLocaleDateString('de-DE', { month: 'short' }).slice(0, 3) });
+  }
+  return { start: `${y}-01-01`, end: `${y + 1}-01-01`, buckets, label: String(y), prevLabel: 'Vorjahr' };
+}
+
+function shiftAnchor(period, anchor, delta) {
+  const [y, m, d] = anchor.split('-').map(Number);
+  if (period === 'week') return ymd(new Date(y, m - 1, d + 7 * delta));
+  if (period === 'month') return ymd(new Date(y, m - 1 + delta, 1));
+  return ymd(new Date(y + delta, 0, 1));
+}
+
+function renderCat() {
+  const c = cat(st.catId);
+  const r = periodRange(st.period, st.anchor);
+  const pr = periodRange(st.period, shiftAnchor(st.period, st.anchor, -1));
+  const mine = state.entries.filter(e => e.categoryId === st.catId);
+  const list = mine.filter(e => inRange(e, r.start, r.end)).sort((a, b) => b.date.localeCompare(a.date) || b.createdAt - a.createdAt);
+  const total = sumMine(list);
+  const prevTotal = sumMine(mine.filter(e => inRange(e, pr.start, pr.end)));
+  const items = r.buckets.map(b => ({ key: b.key, label: b.label, value: sumMine(list.filter(e => inRange(e, b.start, b.end))) }));
+  const backLabel = st.from === 'month' ? monthLabel(st.month) : String(st.year);
+
+  $('#view').innerHTML = `
+    <button class="back" id="back">‹ ${backLabel}</button>
+    <h1>${esc(c.emoji)} ${esc(c.name)}</h1>
+    <div class="seg" id="period">
+      ${[['week', 'Woche'], ['month', 'Monat'], ['year', 'Jahr']].map(([k, v]) => `<button data-p="${k}" class="${st.period === k ? 'on' : ''}">${v}</button>`).join('')}
+    </div>
+    <div style="margin-top:8px">${navRow(r.label, 'pn')}</div>
+    <div class="card">
+      <div class="muted">Ausgaben im Zeitraum</div>
+      <div class="big">${fmt(total)}</div>
+      ${changeText(total, prevTotal, pr.prevLabel === 'Vorjahr' ? pr.label : pr.prevLabel)}
+      ${barChart(items, { values: st.period !== 'month', selected: st.period === 'year' ? null : today() })}
+    </div>
+    ${list.length ? `<div class="label">${list.length} ${list.length === 1 ? 'Eintrag' : 'Einträge'}</div><div class="list">${list.map(entryRow).join('')}</div>`
+      : `<div class="empty">Keine Ausgaben in diesem Zeitraum.</div>`}`;
+
+  $('#back').addEventListener('click', () => { st.level = st.from; render(); });
+  document.querySelectorAll('#period button').forEach(b => b.addEventListener('click', () => {
+    st.period = b.dataset.p; render();
+  }));
+  bindNav('pn', d => { st.anchor = shiftAnchor(st.period, st.anchor, d); });
+  bindEntryRows('stats');
 }
 
 /* ================= Auslagen ================= */
@@ -596,7 +894,7 @@ function renderDebts() {
 
 function renderSettings() {
   const s = state.settings;
-  const usage = id => state.entries.filter(e => e.categoryId === id).length;
+  const usage = id => state.entries.filter(e => e.categoryId === id).length + state.recurring.filter(t => t.categoryId === id).length;
   $('#view').innerHTML = `
     <h1>Einstellungen</h1>
 
@@ -605,6 +903,20 @@ function renderSettings() {
       <div class="toggle-row"><span>Budget aktiv</span><input type="checkbox" id="b-on" ${s.budgetEnabled ? 'checked' : ''}></div>
       ${s.budgetEnabled ? `<label>Betrag pro Monat<input id="b-amt" type="text" inputmode="decimal" value="${s.budget ? toInput(s.budget) : ''}" placeholder="z. B. 800,00"></label>
       <p class="hint">Du bekommst einen Hinweis ab 80 % und wenn das Budget überschritten ist.</p>` : ''}
+    </div>
+
+    <h2>Wiederkehrende Ausgaben</h2>
+    <div class="card">
+      ${state.recurring.length ? `<div class="list flat">${state.recurring.map(t => {
+        const c = cat(t.categoryId), next = nextOccurrence(t), day = Number(t.start.slice(8, 10));
+        return `<button class="item" data-tpl="${t.id}">
+          <span class="dot" style="background:${esc(c.color)}22">${esc(c.emoji)}</span>
+          <span class="mid"><div>${esc(t.note || c.name)}</div>
+            <div>${INTERVALS[t.interval]} am ${day}. · ${t.paused ? '⏸ pausiert' : next ? 'nächste ' + shortDate(next) + next.slice(2, 4) : 'beendet'}</div></span>
+          <span class="amt">${fmt(t.kind === 'received' ? t.amount : t.amount - (t.shares || []).reduce((a, x) => a + x.amount, 0))}</span>
+        </button>`;
+      }).join('')}</div>` : '<p class="hint" style="margin-top:0">z. B. Miete, Handyvertrag, Streaming. Werden am Stichtag automatisch eingetragen.</p>'}
+      <button class="ghost" id="add-tpl">+ Wiederkehrende Ausgabe</button>
     </div>
 
     <h2>Kategorien</h2>
@@ -652,6 +964,13 @@ function renderSettings() {
     s.budget = v; save(); bAmt.value = v ? toInput(v) : ''; toast('Budget gespeichert');
   });
 
+  // Wiederkehrend
+  document.querySelectorAll('[data-tpl]').forEach(b => b.addEventListener('click', () => {
+    const t = state.recurring.find(x => x.id === b.dataset.tpl);
+    if (t) { draft = draftFromTemplate(t); go('add'); }
+  }));
+  $('#add-tpl').addEventListener('click', () => { draft = newDraft(); draft.repeat = true; draft.returnTab = 'settings'; go('add'); });
+
   // Kategorien bearbeiten
   document.querySelectorAll('#cats .set-row input').forEach(inp => inp.addEventListener('change', () => {
     const c = state.categories.find(x => x.id === inp.closest('.set-row').dataset.id);
@@ -675,6 +994,7 @@ function renderSettings() {
       if (!target) target = state.categories.find(x => x.id !== id);
       if (!confirm(`„${c.name}“ wird in ${n} Einträgen benutzt. Diese werden nach „${target.name}“ verschoben. Fortfahren?`)) return;
       state.entries.forEach(e => { if (e.categoryId === id) e.categoryId = target.id; });
+      state.recurring.forEach(t => { if (t.categoryId === id) t.categoryId = target.id; });
     }
     state.categories = state.categories.filter(x => x.id !== id);
     save(); renderSettings();
@@ -696,7 +1016,7 @@ function renderSettings() {
   }));
   document.querySelectorAll('[data-delp]').forEach(b => b.addEventListener('click', () => {
     const id = b.dataset.delp, p = person(id);
-    const used = state.entries.some(e => e.personId === id || (e.shares || []).some(s => s.personId === id));
+    const used = [...state.entries, ...state.recurring].some(e => e.personId === id || (e.shares || []).some(s => s.personId === id));
     if (used) {
       const hasOpen = debtItems(false).some(i => i.personId === id);
       if (hasOpen) { alert(`Mit ${p.name} gibt es noch offene Auslagen. Bitte erst ausgleichen.`); return; }
@@ -776,4 +1096,10 @@ if (navigator.storage && navigator.storage.persist) navigator.storage.persist().
 if ('serviceWorker' in navigator) {
   window.addEventListener('load', () => navigator.serviceWorker.register('sw.js').catch(() => {}));
 }
+function runRecurring() {
+  const n = generateRecurring();
+  if (n) { toast(`🔁 ${n} wiederkehrende Ausgabe${n > 1 ? 'n' : ''} eingetragen`); if (tab !== 'add') render(); }
+}
+document.addEventListener('visibilitychange', () => { if (!document.hidden) runRecurring(); });
 go('add');
+runRecurring();

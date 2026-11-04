@@ -144,12 +144,6 @@ label > input { margin-top: 4px; }
 .legend .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
 .legend .n { flex: 1; }
 .legend .p { color: var(--muted); font-size: 13px; width: 44px; text-align: right; }
-.bars { display: flex; align-items: flex-end; gap: 8px; height: 150px; padding-top: 16px; }
-.bars .col { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: flex-end; height: 100%; font-size: 11px; color: var(--muted); }
-.bars .b { width: 100%; max-width: 40px; background: var(--accent); opacity: .45; border-radius: 6px 6px 2px 2px; min-height: 2px; }
-.bars .col.on .b { opacity: 1; }
-.bars .col.on { color: var(--text); font-weight: 600; }
-.bars .v { font-size: 10px; margin-bottom: 3px; white-space: nowrap; }
 
 /* Debts */
 .sum-row { display: flex; gap: 10px; }
@@ -175,3 +169,33 @@ label > input { margin-top: 4px; }
   font-size: 15px; pointer-events: none; max-width: 90vw; text-align: center; z-index: 20;
 }
 #toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+/* Wischen zum Löschen */
+.swipe { display: flex; overflow-x: auto; scroll-snap-type: x mandatory; scrollbar-width: none; overscroll-behavior-x: contain; }
+.swipe::-webkit-scrollbar { display: none; }
+.swipe > .item { flex: 0 0 100%; scroll-snap-align: start; border-bottom: 0; }
+.swipe-del { flex: 0 0 92px; scroll-snap-align: end; background: var(--bad); color: #fff; font-weight: 600; font-size: 15px; }
+.list > .swipe:not(:last-child) { border-bottom: 1px solid var(--line); }
+.list.flat { background: none; }
+
+.outline-danger { display: block; width: 100%; margin-top: 12px; padding: 13px; border-radius: 14px; border: 1.5px solid var(--bad); color: var(--bad); font-weight: 600; }
+.link { color: var(--accent); font-weight: 600; padding: 0; font-size: inherit; }
+.back { color: var(--accent); font-size: 17px; padding: 6px 0; }
+#toast.has-action { pointer-events: auto; }
+#toast button { color: var(--accent-soft); font-weight: 700; padding: 0 2px; }
+
+/* Balkendiagramm */
+.chart { margin-top: 12px; }
+.chart .area { position: relative; height: 140px; margin-top: 18px; display: flex; align-items: flex-end; gap: 4px; border-bottom: 1px solid var(--line); }
+.chart .col { flex: 1; height: 100%; display: flex; flex-direction: column; justify-content: flex-end; align-items: center; min-width: 0; padding: 0; }
+.chart .b { width: 100%; max-width: 34px; background: var(--accent); opacity: .5; border-radius: 4px 4px 1px 1px; min-height: 0; }
+.chart .col.on .b { opacity: 1; }
+.chart .col.over .b { background: var(--bad); }
+.chart .v { font-size: 9px; color: var(--muted); margin-bottom: 2px; white-space: nowrap; }
+.chart .xl { display: flex; gap: 4px; }
+.chart .xl span { flex: 1; text-align: center; font-size: 10px; color: var(--muted); min-width: 0; overflow: visible; white-space: nowrap; }
+.budget-line { position: absolute; left: 0; right: 0; border-top: 1.5px dashed var(--warn); pointer-events: none; z-index: 1; }
+.budget-line span { position: absolute; right: 0; top: -15px; font-size: 9px; color: var(--warn); background: var(--card); padding: 0 3px; }
+.legend button.r { width: 100%; text-align: left; }
+.legend .chev { color: var(--muted); font-size: 18px; }
+.item:focus, .col:focus, .r:focus { outline: none; }

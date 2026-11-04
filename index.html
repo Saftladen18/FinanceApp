@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="default">
+  <meta name="apple-mobile-web-app-title" content="Kosten">
+  <meta name="theme-color" content="#0f766e">
+  <title>Kosten</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="apple-touch-icon" href="icons/icon-180.png">
+  <link rel="icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <main id="view"></main>
+  <div id="toast" role="status"></div>
+  <nav id="nav">
+    <button data-tab="add"><span class="ico">➕</span>Neu</button>
+    <button data-tab="list"><span class="ico">📋</span>Liste</button>
+    <button data-tab="stats"><span class="ico">📊</span>Statistik</button>
+    <button data-tab="debts"><span class="ico">🤝</span>Auslagen</button>
+    <button data-tab="settings"><span class="ico">⚙️</span>Mehr</button>
+  </nav>
+  <script src="app.js"></script>
+</body>
+</html>

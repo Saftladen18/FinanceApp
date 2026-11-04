@@ -1,5 +1,5 @@
 // Offline-Unterstützung: erst Netzwerk (für Updates), sonst Cache.
-const CACHE = 'kosten-v1';
+const CACHE = 'kosten-v2';
 const ASSETS = ['./', './index.html', './styles.css', './app.js', './manifest.webmanifest',
   './icons/icon-180.png', './icons/icon-192.png', './icons/icon-512.png'];
 
@@ -18,8 +18,10 @@ self.addEventListener('fetch', e => {
   if (req.method !== 'GET' || new URL(req.url).origin !== location.origin) return;
   e.respondWith(
     fetch(req).then(res => {
-      if (res.ok) { const copy = res.clone(); caches.open(CACHE).then(c => c.put(req, copy)); }
+      if (!res.ok) throw new Error('HTTP ' + res.status); // z. B. Seite offline genommen → Cache nutzen
+      const copy = res.clone();
+      caches.open(CACHE).then(c => c.put(req, copy));
       return res;
-    }).catch(() => caches.match(req).then(r => r || caches.match('./index.html')))
+    }).catch(() => caches.match(req).then(r => r || caches.match('./index.html')).then(r => r || fetch(req)))
   );
 });
